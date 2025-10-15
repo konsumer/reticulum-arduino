@@ -19,19 +19,26 @@ bool Reticulum::identityCreate(Identity & identity) {
   return true;
 }
 
-bool Reticulum::identityFromBytes(Identity & identity,
-  const uint8_t * privateBytes) {
+bool Reticulum::identityFromBytes(Identity& identity, const uint8_t* privateBytes) {
+  // First 32 bytes: encryption private key
   memcpy(identity.encryptPrivate, privateBytes, ENCRYPT_KEY_SIZE);
+  // Next 32 bytes: signing private key
   memcpy(identity.signPrivate, privateBytes + ENCRYPT_KEY_SIZE, SIGN_KEY_SIZE);
 
-  uint8_t tmpPub[32];
-  Curve25519::dh1(tmpPub, identity.encryptPrivate);
-  memcpy(identity.encryptPublic, tmpPub, ENCRYPT_KEY_SIZE);
-
+  // Derive X25519 public key from private using eval() with base point 9
+  uint8_t basepoint[32] = {9};  // Standard X25519 base point
+  for (int i = 1; i < 32; i++) basepoint[i] = 0;
+  
+  if (!Curve25519::eval(identity.encryptPublic, identity.encryptPrivate, basepoint)) {
+    return false;
+  }
+  
+  // Derive Ed25519 public key
   Ed25519::derivePublicKey(identity.signPublic, identity.signPrivate);
 
   return true;
 }
+
 
 void Reticulum::identityToBytes(const Identity & identity, uint8_t * output) {
   memcpy(output, identity.encryptPrivate, ENCRYPT_KEY_SIZE);
@@ -289,13 +296,16 @@ size_t Reticulum::buildAnnounce(const Identity & identity,
   return result;
 }
 
-bool Reticulum::announceParsePacket(const Packet & packet, Announce & announce) {
-  const uint8_t * data = packet.data;
+bool Reticulum::announceParsePacket(const Packet& packet, Announce& announce) {
+  const uint8_t* data = packet.data;
   size_t dataLen = packet.dataLen;
 
   announce.valid = false;
   announce.appData = nullptr;
   announce.appDataLen = 0;
+
+  // Copy destination hash from packet
+  memcpy(announce.destinationHash, packet.destinationHash, HASH_SIZE);
 
   if (dataLen < 64) return false;
   memcpy(announce.keyPubEncrypt, data, ENCRYPT_KEY_SIZE);
@@ -303,61 +313,54 @@ bool Reticulum::announceParsePacket(const Packet & packet, Announce & announce) 
   size_t offset = 64;
 
   if (dataLen < offset + 20) return false;
-  memcpy(announce.nameHash, data + offset, 10);
-  offset += 10;
-  memcpy(announce.randomHash, data + offset, 10);
-  offset += 10;
+  memcpy(announce.nameHash, data + offset, 10); offset += 10;
+  memcpy(announce.randomHash, data + offset, 10); offset += 10;
 
-  uint8_t contextFlag = packet.context;
-  if (contextFlag == 1) {
-    if (dataLen < offset + ENCRYPT_KEY_SIZE + SIGNATURE_SIZE) return false;
-    memcpy(announce.ratchetPub, data + offset, ENCRYPT_KEY_SIZE);
-    offset += ENCRYPT_KEY_SIZE;
-  } else {
-    memcpy(announce.ratchetPub, announce.keyPubEncrypt, ENCRYPT_KEY_SIZE);
-  }
+// For announces, always read ratchet from data regardless of context
+if (dataLen < offset + ENCRYPT_KEY_SIZE + SIGNATURE_SIZE) return false;
+memcpy(announce.ratchetPub, data + offset, ENCRYPT_KEY_SIZE); 
+offset += ENCRYPT_KEY_SIZE;
 
+  // Read signature
   if (dataLen < offset + SIGNATURE_SIZE) return false;
-  memcpy(announce.signature, data + offset, SIGNATURE_SIZE);
+  memcpy(announce.signature, data + offset, SIGNATURE_SIZE); 
   offset += SIGNATURE_SIZE;
 
+  // Everything after signature is app_data
   if (dataLen > offset) {
     announce.appDataLen = dataLen - offset;
-    announce.appData = (uint8_t * ) malloc(announce.appDataLen);
+    announce.appData = (uint8_t*)malloc(announce.appDataLen);
     if (announce.appData) {
       memcpy(announce.appData, data + offset, announce.appDataLen);
     }
   }
 
-  memcpy(announce.destinationHash, packet.destinationHash, HASH_SIZE);
-
+  // Build signed data for verification
   size_t signedDataLen = HASH_SIZE + 64 + 20 + ENCRYPT_KEY_SIZE + announce.appDataLen;
-  uint8_t * signedData = (uint8_t * ) malloc(signedDataLen);
+  uint8_t* signedData = (uint8_t*)malloc(signedDataLen);
   if (!signedData) return false;
 
   offset = 0;
-  memcpy(signedData + offset, packet.destinationHash, HASH_SIZE);
-  offset += HASH_SIZE;
-  memcpy(signedData + offset, announce.keyPubEncrypt, ENCRYPT_KEY_SIZE);
-  offset += ENCRYPT_KEY_SIZE;
-  memcpy(signedData + offset, announce.keyPubSignature, SIGN_KEY_SIZE);
-  offset += SIGN_KEY_SIZE;
-  memcpy(signedData + offset, announce.nameHash, 10);
-  offset += 10;
-  memcpy(signedData + offset, announce.randomHash, 10);
-  offset += 10;
-  memcpy(signedData + offset, announce.ratchetPub, ENCRYPT_KEY_SIZE);
-  offset += ENCRYPT_KEY_SIZE;
+  memcpy(signedData + offset, announce.destinationHash, HASH_SIZE); offset += HASH_SIZE;
+  memcpy(signedData + offset, announce.keyPubEncrypt, ENCRYPT_KEY_SIZE); offset += ENCRYPT_KEY_SIZE;
+  memcpy(signedData + offset, announce.keyPubSignature, SIGN_KEY_SIZE); offset += SIGN_KEY_SIZE;
+  memcpy(signedData + offset, announce.nameHash, 10); offset += 10;
+  memcpy(signedData + offset, announce.randomHash, 10); offset += 10;
+  memcpy(signedData + offset, announce.ratchetPub, ENCRYPT_KEY_SIZE); offset += ENCRYPT_KEY_SIZE;
   if (announce.appDataLen > 0 && announce.appData) {
     memcpy(signedData + offset, announce.appData, announce.appDataLen);
   }
 
-  announce.valid = Ed25519::verify(announce.signature, announce.keyPubSignature,
-    signedData, signedDataLen);
+  // Verify signature
+  announce.valid = Ed25519::verify(announce.signature, announce.keyPubSignature, 
+                                   signedData, signedDataLen);
+  
   free(signedData);
-
-  return announce.valid;
+  return true;
 }
+
+
+
 
 void Reticulum::freeAnnounce(Announce & announce) {
   if (announce.appData) {
@@ -423,11 +426,8 @@ size_t Reticulum::buildProof(const Identity & identity,
   return encodePacket(proofPkt, output, maxLen);
 }
 
-bool Reticulum::proofValidate(const Packet & packet,
-  const Identity & identity,
-    const uint8_t * fullPacketHash) {
+bool Reticulum::proofValidate(const Packet & packet, const Identity & identity, const uint8_t * fullPacketHash) {
   if (packet.dataLen < 1 + SIGNATURE_SIZE) return false;
-
   const uint8_t * signature = packet.data + 1;
   return Ed25519::verify(signature, identity.signPublic, fullPacketHash, FULL_HASH_SIZE);
 }
@@ -510,12 +510,12 @@ size_t Reticulum::buildData(const Identity & identity,
   return result;
 }
 
-int Reticulum::messageDecrypt(const Packet & packet,
-  const Identity & identity,
-    uint8_t * plaintext, size_t maxPlaintextLen,
-    const uint8_t ** ratchets, size_t ratchetCount) {
+int Reticulum::messageDecrypt(const Packet& packet, const Identity& identity,
+                              uint8_t* plaintext, size_t maxPlaintextLen,
+                              const uint8_t** ratchets, size_t ratchetCount) {
   if (!packet.data || packet.dataLen <= 49) return -1;
 
+  // Get identity hash (used as salt in HKDF)
   uint8_t identityHash[FULL_HASH_SIZE];
   SHA256 sha;
   sha.reset();
@@ -523,59 +523,26 @@ int Reticulum::messageDecrypt(const Packet & packet,
   sha.update(identity.signPublic, SIGN_KEY_SIZE);
   sha.finalize(identityHash, FULL_HASH_SIZE);
 
-  const uint8_t * peerPubBytes = packet.data + 1;
-  const uint8_t * ciphertext = packet.data + 33;
+  // Extract peer's ephemeral public key (bytes 1-32) and ciphertext (bytes 33+)
+  const uint8_t* peerPubBytes = packet.data + 1;  // Skip version byte
+  const uint8_t* ciphertext = packet.data + 33;
   size_t ciphertextLen = packet.dataLen - 33;
 
-  // Try with own key first - make a copy since dh2 destroys the private key
-  uint8_t sharedKey[32];
-  uint8_t privateKeyCopy[32];
-  memcpy(sharedKey, peerPubBytes, 32);
-  memcpy(privateKeyCopy, identity.encryptPrivate, 32);
-
-  if (Curve25519::dh2(sharedKey, privateKeyCopy)) {
-    uint8_t derivedKey[64];
-    if (hkdf(derivedKey, 64, sharedKey, 32, identityHash, HASH_SIZE, nullptr, 0)) {
-      uint8_t signingKey[32];
-      uint8_t encryptionKey[32];
-      memcpy(signingKey, derivedKey, 32);
-      memcpy(encryptionKey, derivedKey + 32, 32);
-
-      if (ciphertextLen > 48) {
-        const uint8_t * receivedHmac = ciphertext + ciphertextLen - 32;
-        size_t signedDataLen = ciphertextLen - 32;
-
-        uint8_t expectedHmac[32];
-        hmacSha256(signingKey, 32, ciphertext, signedDataLen, expectedHmac);
-
-        if (memcmp(receivedHmac, expectedHmac, 32) == 0) {
-          const uint8_t * iv = ciphertext;
-          const uint8_t * ciphertextData = ciphertext + 16;
-          size_t ciphertextDataLen = signedDataLen - 16;
-
-          uint8_t paddedPlaintext[512];
-          aesCbcDecrypt(encryptionKey, iv, ciphertextData, ciphertextDataLen, paddedPlaintext);
-
-          int unpaddedLen = pkcs7Unpad(paddedPlaintext, ciphertextDataLen, plaintext);
-          if (unpaddedLen > 0 && (size_t) unpaddedLen <= maxPlaintextLen) {
-            return unpaddedLen;
-          }
-        }
-      }
-    }
-  }
-
-  // Try with ratchets
+  // Try with ratchets - this is the PRIMARY method for DATA packets
   if (ratchets && ratchetCount > 0) {
     for (size_t i = 0; i < ratchetCount; i++) {
       if (!ratchets[i]) continue;
 
-      uint8_t ratchetPriv[32];
-      memcpy(ratchetPriv, ratchets[i], 32);
+      // Make a copy of the ratchet private key (dh2 destroys it)
+      uint8_t ratchetPrivCopy[32];
+      memcpy(ratchetPrivCopy, ratchets[i], 32);
+      
+      // Perform X25519 key exchange: shared = dh2(peer_pub, ratchet_priv)
+      uint8_t sharedKey[32];
       memcpy(sharedKey, peerPubBytes, 32);
+      if (!Curve25519::dh2(sharedKey, ratchetPrivCopy)) continue;
 
-      if (!Curve25519::dh2(sharedKey, ratchetPriv)) continue;
-
+      // Derive encryption and signing keys using HKDF
       uint8_t derivedKey[64];
       if (!hkdf(derivedKey, 64, sharedKey, 32, identityHash, HASH_SIZE, nullptr, 0)) continue;
 
@@ -584,26 +551,70 @@ int Reticulum::messageDecrypt(const Packet & packet,
       memcpy(signingKey, derivedKey, 32);
       memcpy(encryptionKey, derivedKey + 32, 32);
 
+      // Verify we have enough data for HMAC
       if (ciphertextLen <= 48) continue;
 
-      const uint8_t * receivedHmac = ciphertext + ciphertextLen - 32;
+      // Extract HMAC (last 32 bytes) and signed data (everything before HMAC)
+      const uint8_t* receivedHmac = ciphertext + ciphertextLen - 32;
       size_t signedDataLen = ciphertextLen - 32;
 
+      // Verify HMAC
       uint8_t expectedHmac[32];
       hmacSha256(signingKey, 32, ciphertext, signedDataLen, expectedHmac);
 
       if (memcmp(receivedHmac, expectedHmac, 32) != 0) continue;
 
-      const uint8_t * iv = ciphertext;
-      const uint8_t * ciphertextData = ciphertext + 16;
+      // Extract IV (first 16 bytes of ciphertext) and actual ciphertext data
+      const uint8_t* iv = ciphertext;
+      const uint8_t* ciphertextData = ciphertext + 16;
       size_t ciphertextDataLen = signedDataLen - 16;
 
+      // Decrypt using AES-CBC
       uint8_t paddedPlaintext[512];
       aesCbcDecrypt(encryptionKey, iv, ciphertextData, ciphertextDataLen, paddedPlaintext);
 
+      // Remove PKCS7 padding
       int unpaddedLen = pkcs7Unpad(paddedPlaintext, ciphertextDataLen, plaintext);
-      if (unpaddedLen > 0 && (size_t) unpaddedLen <= maxPlaintextLen) {
+      if (unpaddedLen > 0 && (size_t)unpaddedLen <= maxPlaintextLen) {
         return unpaddedLen;
+      }
+    }
+  }
+
+  // If ratchet decryption failed, try with identity encryption key
+  uint8_t identityPrivCopy[32];
+  memcpy(identityPrivCopy, identity.encryptPrivate, 32);
+  
+  uint8_t sharedKey[32];
+  memcpy(sharedKey, peerPubBytes, 32);
+  if (Curve25519::dh2(sharedKey, identityPrivCopy)) {
+    uint8_t derivedKey[64];
+    if (hkdf(derivedKey, 64, sharedKey, 32, identityHash, HASH_SIZE, nullptr, 0)) {
+      uint8_t signingKey[32];
+      uint8_t encryptionKey[32];
+      memcpy(signingKey, derivedKey, 32);
+      memcpy(encryptionKey, derivedKey + 32, 32);
+
+      if (ciphertextLen > 48) {
+        const uint8_t* receivedHmac = ciphertext + ciphertextLen - 32;
+        size_t signedDataLen = ciphertextLen - 32;
+
+        uint8_t expectedHmac[32];
+        hmacSha256(signingKey, 32, ciphertext, signedDataLen, expectedHmac);
+
+        if (memcmp(receivedHmac, expectedHmac, 32) == 0) {
+          const uint8_t* iv = ciphertext;
+          const uint8_t* ciphertextData = ciphertext + 16;
+          size_t ciphertextDataLen = signedDataLen - 16;
+
+          uint8_t paddedPlaintext[512];
+          aesCbcDecrypt(encryptionKey, iv, ciphertextData, ciphertextDataLen, paddedPlaintext);
+
+          int unpaddedLen = pkcs7Unpad(paddedPlaintext, ciphertextDataLen, plaintext);
+          if (unpaddedLen > 0 && (size_t)unpaddedLen <= maxPlaintextLen) {
+            return unpaddedLen;
+          }
+        }
       }
     }
   }
@@ -611,12 +622,6 @@ int Reticulum::messageDecrypt(const Packet & packet,
   return -1;
 }
 
-void Reticulum::sha256(const uint8_t * data, size_t len, uint8_t * hash) {
-  SHA256 sha;
-  sha.reset();
-  sha.update(data, len);
-  sha.finalize(hash, FULL_HASH_SIZE);
-}
 
 void Reticulum::hmacSha256(const uint8_t * key, size_t keyLen,
   const uint8_t * data, size_t dataLen, uint8_t * output) {
