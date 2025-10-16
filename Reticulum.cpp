@@ -515,13 +515,17 @@ int Reticulum::messageDecrypt(const Packet& packet, const Identity& identity,
                               const uint8_t** ratchets, size_t ratchetCount) {
   if (!packet.data || packet.dataLen <= 49) return -1;
 
-  // Get identity hash (used as salt in HKDF)
-  uint8_t identityHash[FULL_HASH_SIZE];
+  // Get identity hash - Python uses ONLY first 16 bytes as HKDF salt!
+  uint8_t identityHashFull[FULL_HASH_SIZE];
   SHA256 sha;
   sha.reset();
   sha.update(identity.encryptPublic, ENCRYPT_KEY_SIZE);
   sha.update(identity.signPublic, SIGN_KEY_SIZE);
-  sha.finalize(identityHash, FULL_HASH_SIZE);
+  sha.finalize(identityHashFull, FULL_HASH_SIZE);
+
+  // Truncate to 16 bytes for HKDF salt
+  uint8_t identityHash[HASH_SIZE];
+  memcpy(identityHash, identityHashFull, HASH_SIZE);
 
   // Extract peer's ephemeral public key (bytes 1-32) and ciphertext (bytes 33+)
   const uint8_t* peerPubBytes = packet.data + 1;  // Skip version byte
