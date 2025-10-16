@@ -426,10 +426,13 @@ size_t Reticulum::buildProof(const Identity & identity,
   return encodePacket(proofPkt, output, maxLen);
 }
 
-bool Reticulum::proofValidate(const Packet & packet, const Identity & identity, const uint8_t * fullPacketHash) {
-  if (packet.dataLen < 1 + SIGNATURE_SIZE) return false;
-  const uint8_t * signature = packet.data + 1;
-  return Ed25519::verify(signature, identity.signPublic, fullPacketHash, FULL_HASH_SIZE);
+bool Reticulum::proofValidate(const Packet& packet, const Identity& identity, const uint8_t* fullPacketHash) {
+  if (packet.dataLen < 1 + SIGNATURE_SIZE) {
+    return false;
+  }
+  const uint8_t* signature = packet.data + 1;
+  bool result = Ed25519::verify(signature, identity.signPublic, fullPacketHash, FULL_HASH_SIZE);
+  return result;
 }
 
 size_t Reticulum::buildData(const Identity & identity,
