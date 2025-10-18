@@ -1,6 +1,6 @@
 // Basic example
 
-#include <Reticulum.h>
+#include <Reticulum.h> // https://github.com/konsumer/reticulum-identity
 
 Reticulum rns;
 
