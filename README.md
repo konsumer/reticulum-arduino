@@ -41,3 +41,9 @@ arduino-cli upload -p "${ARDUINO_DEVICE}" --fqbn "${ARDUINO_BOARD}" $(pwd)/examp
 # monitor serial (Ctrl-C to exit)
 arduino-cli monitor -p "${ARDUINO_DEVICE}" --config 115200
 ```
+
+
+## TODO
+
+- build a whole client with this, even if it's simple
+- use [better random data](https://siliconjunction.wordpress.com/2025/12/04/practical-hardware-entropy-for-arduino-projects/)
