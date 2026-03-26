@@ -1,7 +1,14 @@
 #ifndef RETICULUM_H
 #define RETICULUM_H
 
+#ifdef ARDUINO
 #include <Arduino.h>
+#else
+#include <stdint.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
 #include <Crypto.h>
 #include <SHA256.h>
 #include <AES.h>

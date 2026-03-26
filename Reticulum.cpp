@@ -1,7 +1,29 @@
 #include "Reticulum.h"
 
+#ifndef ARDUINO
+#include <time.h>
+#include <string>
+using std::string;
+#define String string
+static void rng_native_rand(uint8_t* buf, size_t len) {
+  static bool seeded = false;
+  if (!seeded) {
+    srand((unsigned)time(NULL));
+    seeded = true;
+  }
+  for (size_t i = 0; i < len; i++) {
+    buf[i] = (uint8_t)(rand() & 0xFF);
+  }
+}
+#define RNG_RAND(buf, len) rng_native_rand(buf, len)
+#define RNG_BEGIN(s) ((void)0)
+#else
+#define RNG_RAND(buf, len) RNG.rand(buf, len)
+#define RNG_BEGIN(s) RNG.begin(s)
+#endif
+
 Reticulum::Reticulum() {
-  RNG.begin("Reticulum");
+  RNG_BEGIN("Reticulum");
 }
 
 Reticulum::~Reticulum() {}
@@ -215,7 +237,7 @@ size_t Reticulum::buildAnnounce(const Identity& identity,
   sha.update((uint8_t*)name, strlen(name));
   sha.finalize(nameHash, FULL_HASH_SIZE);
 
-  RNG.rand(randomHash, 10);
+  RNG_RAND(randomHash, 10);
 
   if (ratchetPub == nullptr || memcmp(ratchetPub, identity.encryptPublic, ENCRYPT_KEY_SIZE) == 0) {
     memcpy(effectiveRatchet, identity.encryptPublic, ENCRYPT_KEY_SIZE);
@@ -491,7 +513,7 @@ size_t Reticulum::buildData(const Identity& identity,
   if (paddedLen == 0) return 0;
 
   uint8_t iv[16];
-  RNG.rand(iv, 16);
+  RNG_RAND(iv, 16);
 
   uint8_t ciphertext[512];
   aesCbcEncrypt(encryptionKey, iv, paddedPlaintext, paddedLen, ciphertext);
