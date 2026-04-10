@@ -46,4 +46,5 @@ arduino-cli monitor -p "${ARDUINO_DEVICE}" --config 115200
 ## TODO
 
 - build a whole client with this, even if it's simple
-- use [better random data](https://siliconjunction.wordpress.com/2025/12/04/practical-hardware-entropy-for-arduino-projects/)
+- use [better random data](https://github.com/markqvist/RNode_Firmware/blob/180207aa2ea8522028a6c7b50092aac3039eec96/RNode_Firmware.ino#L96-L116)
+
